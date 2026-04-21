@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🏝️ Île 3D Interactive</title>
+  <style>
+    *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+    html,body{width:100%;height:100%;overflow:hidden;background:#071428;font-family:'Trebuchet MS','Segoe UI',sans-serif}
+    #renderCanvas{width:100%;height:100%;display:block;touch-action:none;outline:none}
+    #hud{position:fixed;inset:0;pointer-events:none;z-index:50}
+    #title-card{position:absolute;top:22px;left:26px}
+    #title-card h1{font-size:26px;font-weight:700;color:#fff;text-shadow:0 2px 14px rgba(0,0,0,.7);letter-spacing:.5px}
+    #title-card p{font-size:11px;color:rgba(255,255,255,.5);letter-spacing:2.5px;text-transform:uppercase;margin-top:3px}
+    #clock{position:absolute;top:22px;right:26px;background:rgba(0,0,0,.32);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.13);border-radius:14px;padding:10px 18px;text-align:center;min-width:110px}
+    #clock-phase{font-size:22px;display:block;margin-bottom:2px}
+    #clock-time{font-size:20px;font-weight:700;color:#fff;letter-spacing:2px}
+    #hint{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.28);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:30px;padding:8px 22px;color:rgba(255,255,255,.55);font-size:11px;letter-spacing:1px;white-space:nowrap}
+    #sound-btn{position:absolute;bottom:18px;right:26px;pointer-events:all;background:rgba(0,0,0,.32);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.13);border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:20px;transition:background .2s;user-select:none}
+    #sound-btn:hover{background:rgba(255,255,255,.12)}
+    #loading{position:fixed;inset:0;background:#071428;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;transition:opacity .9s ease}
+    #loading h2{font-size:36px;color:#fff;text-shadow:0 0 30px rgba(80,180,255,.5);margin-bottom:14px}
+    #loading p{font-size:13px;color:rgba(255,255,255,.4);letter-spacing:2px}
+    #loading-sub{font-size:11px;color:rgba(255,255,255,.25);letter-spacing:1px;margin-top:8px}
+    .bar-track{width:220px;height:3px;background:rgba(255,255,255,.08);border-radius:3px;margin-top:22px;overflow:hidden}
+    .bar-fill{height:100%;background:linear-gradient(90deg,#3a9ff5,#7ddcf7);border-radius:3px;width:0;transition:width .4s ease}
+  </style>
+</head>
+<body>
+<div id="loading">
+  <h2>🏝️ Île 3D</h2>
+  <p>CHARGEMENT DE L'ÎLE…</p>
+  <p id="loading-sub">Initialisation…</p>
+  <div class="bar-track"><div class="bar-fill" id="bar"></div></div>
+</div>
+<canvas id="renderCanvas" tabindex="0"></canvas>
+<div id="hud">
+  <div id="title-card"><h1>🏝️ Île 3D</h1><p>Exploration libre</p></div>
+  <div id="clock"><span id="clock-phase">🌤️</span><span id="clock-time">--:--</span></div>
+  <div id="hint">🖱️ Clic + Glisser &nbsp;·&nbsp; Molette Zoom &nbsp;·&nbsp; Clic droit Pan</div>
+  <div id="sound-btn">🔇</div>
+</div>
+
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<script src="https://cdn.babylonjs.com/materialsLibrary/babylonjs.materials.min.js"></script>
+<script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+<script>
+"use strict";
+
+/* ── PROGRESS ─────────────────────────────────────────────── */
+const barEl=document.getElementById("bar"),subEl=document.getElementById("loading-sub");
+let _prog=0;
+const prog=(pct,lbl)=>{if(pct!=null)_prog=Math.max(_prog,pct);barEl.style.width=_prog+"%";if(lbl)subEl.textContent=lbl;};
+prog(5,"Moteur WebGL…");
+
+/* ── ENGINE ───────────────────────────────────────────────── */
+const canvas=document.getElementById("renderCanvas");
+const engine=new BABYLON.Engine(canvas,true,{preserveDrawingBuffer:true,stencil:true,antialias:true});
+
+/* ── CONFIG ───────────────────────────────────────────────── */
+const CFG={
+  ISLAND_R:22, WATER_Y:-0.55, SAND_Y:0.0, SHADOW_SZ:1024,
+  TREES:[[-14,-8],[-16,2],[-13,10],[-8,16],[2,18],[10,15],[16,6],[17,-4],[13,-12],[5,-17],[-5,-18],[-12,-13],[-18,8],[18,8],[-9,-7],[9,-7],[-7,9],[7,9],[-15,-3],[15,-3]],
+  ROCKS:[{x:18,z:5,s:1.1},{x:-17,z:7,s:1.4},{x:7,z:19,s:.8},{x:-9,z:-18,s:1.2},{x:15,z:-11,s:.9},{x:-19,z:-4,s:1},{x:11,z:16,s:.7},{x:-14,z:14,s:.6},{x:19,z:-8,s:1.3}]
+};
+
+/* ── HELPERS ──────────────────────────────────────────────── */
+const C3=(r,g,b)=>new BABYLON.Color3(r,g,b);
+const C4=(r,g,b,a)=>new BABYLON.Color4(r,g,b,a??1);
+const lN=(a,b,t)=>a+(b-a)*t;
+const lC=(a,b,t)=>C3(lN(a.r,b.r,t),lN(a.g,b.g,t),lN(a.b,b.b,t));
+
+/* ── PALETTES — nuit beaucoup plus lumineuse ──────────────── */
+const PAL={
+  night:{sky:C3(.04,.06,.18),sun:C3(.18,.22,.50),amb:C3(.15,.17,.32),fog:C3(.03,.05,.14),si:.1,ai:.28},
+  dawn :{sky:C3(.85,.45,.20),sun:C3(1,.60,.20), amb:C3(.36,.26,.20),fog:C3(.80,.50,.30),si:.5,ai:.32},
+  day  :{sky:C3(.36,.61,1),  sun:C3(1,.96,.82), amb:C3(.44,.50,.60),fog:C3(.62,.82,1), si:1.1,ai:.55},
+  dusk :{sky:C3(.90,.40,.10),sun:C3(1,.45,.10), amb:C3(.35,.20,.15),fog:C3(.85,.45,.25),si:.38,ai:.28}
+};
+const lP=(a,b,t)=>({sky:lC(a.sky,b.sky,t),sun:lC(a.sun,b.sun,t),amb:lC(a.amb,b.amb,t),fog:lC(a.fog,b.fog,t),si:lN(a.si,b.si,t),ai:lN(a.ai,b.ai,t)});
+
+/* ── HAUTEUR ──────────────────────────────────────────────── */
+const getH=(x,z)=>{
+  const d=Math.sqrt(x*x+z*z),n=d/CFG.ISLAND_R;
+  if(n>=1) return CFG.WATER_Y-.5;
+  let h;
+  if(n<.45){h=.12+Math.sin(x*.3)*Math.cos(z*.3)*.08;}
+  else{const t=(n-.45)/.55;h=lN(.12,CFG.SAND_Y+.06,Math.pow(t,.65));h+=Math.sin(x*.65)*Math.cos(z*.55)*.25*(1-n);h+=Math.sin(x*1.3+.7)*Math.cos(z*1.2)*.15*(1-n);}
+  if(n>.84) h=lN(h,CFG.SAND_Y+.04,(n-.84)/.16);
+  return Math.max(CFG.SAND_Y+.02,h);
+};
+
+/* ── SCÈNE ────────────────────────────────────────────────── */
+prog(10,"Scène…");
+const scene=new BABYLON.Scene(engine);
+scene.clearColor=C4(.36,.61,1,1);
+scene.fogMode=BABYLON.Scene.FOGMODE_EXP2;
+scene.fogDensity=.004;
+scene.fogColor=C3(.62,.82,1);
+
+/* ── CAMÉRA ───────────────────────────────────────────────── */
+const camera=new BABYLON.ArcRotateCamera("cam",-Math.PI/2.3,Math.PI/4.1,55,new BABYLON.Vector3(0,2,0),scene);
+camera.lowerRadiusLimit=8;camera.upperRadiusLimit=130;
+camera.lowerBetaLimit=.08;camera.upperBetaLimit=Math.PI/2.08;
+camera.wheelDeltaPercentage=.018;camera.panningSensibility=80;
+camera.attachControl(canvas,true);
+
+/* ── LUMIÈRES ─────────────────────────────────────────────── */
+const ambLight=new BABYLON.HemisphericLight("amb",new BABYLON.Vector3(0,1,0),scene);
+ambLight.diffuse=C3(.44,.50,.60);ambLight.groundColor=C3(.18,.14,.10);ambLight.intensity=.55;
+const sun=new BABYLON.DirectionalLight("sun",new BABYLON.Vector3(-1,-2,-1).normalize(),scene);
+sun.position=new BABYLON.Vector3(30,40,30);sun.intensity=1.1;sun.diffuse=C3(1,.96,.82);sun.specular=C3(.5,.45,.3);
+const shadow=new BABYLON.ShadowGenerator(CFG.SHADOW_SZ,sun);
+shadow.useBlurExponentialShadowMap=true;shadow.blurKernel=32;
+// Lueur lune nocturne
+const moonLight=new BABYLON.PointLight("moon",new BABYLON.Vector3(0,40,0),scene);
+moonLight.diffuse=C3(.35,.40,.70);moonLight.intensity=0;
+
+/* ── SKYBOX ───────────────────────────────────────────────── */
+prog(14,"Ciel…");
+const skybox=BABYLON.MeshBuilder.CreateBox("skyBox",{size:900},scene);
+const skyMat=new BABYLON.StandardMaterial("skyMat",scene);
+skyMat.backFaceCulling=false;
+skyMat.reflectionTexture=new BABYLON.CubeTexture("https://assets.babylonjs.com/textures/skybox",scene);
+skyMat.reflectionTexture.coordinatesMode=BABYLON.Texture.SKYBOX_MODE;
+skyMat.diffuseColor=C3(0,0,0);skyMat.specularColor=C3(0,0,0);
+skybox.material=skyMat;skybox.infiniteDistance=true;
+
+/* ── MAT CACHE ────────────────────────────────────────────── */
+const _mats={};
+const mkMat=(id,p)=>{if(_mats[id])return _mats[id];const m=new BABYLON.StandardMaterial(id,scene);Object.assign(m,p);return(_mats[id]=m);};
+
+/* ── TERRAIN ──────────────────────────────────────────────── */
+prog(18,"Terrain…");
+const islandMesh=BABYLON.MeshBuilder.CreateGround("island",{width:90,height:90,subdivisions:88},scene);
+const vPos=islandMesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+for(let i=0;i<vPos.length;i+=3) vPos[i+1]=getH(vPos[i],vPos[i+2]);
+islandMesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind,vPos);
+islandMesh.createNormals(true);
+const sandTex=new BABYLON.Texture("https://assets.babylonjs.com/textures/sand.jpg",scene);
+sandTex.uScale=16;sandTex.vScale=16;
+islandMesh.material=mkMat("islandMat",{diffuseTexture:sandTex,specularColor:C3(.02,.02,.02)});
+islandMesh.receiveShadows=true;
+
+const cityBase=BABYLON.MeshBuilder.CreateGround("cityBase",{width:25,height:25,subdivisions:4},scene);
+cityBase.position.y=.14;
+cityBase.material=mkMat("concrete",{diffuseColor:C3(.58,.56,.52),specularColor:C3(.04,.04,.04)});
+cityBase.receiveShadows=true;
+
+/* ── EAU ──────────────────────────────────────────────────── */
+// Le plan eau est à Y=-0.55. L'île commence à Y=+0.02 minimum.
+// Donc l'île masque toujours l'eau — zéro vague sur l'île.
+prog(26,"Eau…");
+const waterMesh=BABYLON.MeshBuilder.CreateGround("water",{width:900,height:900,subdivisions:4},scene);
+waterMesh.position.y=CFG.WATER_Y;
+const waterMat=new BABYLON.WaterMaterial("waterMat",scene,new BABYLON.Vector2(512,512));
+waterMat.bumpTexture=new BABYLON.Texture("https://assets.babylonjs.com/textures/waterbump.png",scene);
+waterMat.windForce=-5;waterMat.waveHeight=.15;
+waterMat.windDirection=new BABYLON.Vector2(1.2,.8);
+waterMat.waterColor=C3(.05,.28,.60);waterMat.colorBlendFactor=.24;
+waterMat.bumpHeight=.32;waterMat.waveLength=.1;waterMat.waveSpeed=1.6;
+waterMat.addToRenderList(skybox);
+waterMat.addToRenderList(islandMesh);
+waterMat.addToRenderList(cityBase);
+waterMesh.material=waterMat;
+
+/* ── ROCHERS ──────────────────────────────────────────────── */
+const mRock=mkMat("rock",{diffuseColor:C3(.52,.48,.42),specularColor:C3(.06,.06,.06)});
+CFG.ROCKS.forEach(({x,z,s})=>{
+  const y=getH(x,z);
+  const r=BABYLON.MeshBuilder.CreateSphere("rock",{diameter:s*1.8,segments:4},scene);
+  r.position.set(x,y+s*.25,z);r.scaling.set(1,.62,1);
+  r.rotation.y=(x*5.1+z*2.7)%(Math.PI*2);r.material=mRock;
+  r.receiveShadows=true;shadow.addShadowCaster(r);
+  waterMat.addToRenderList(r);
+});
+
+/* ── SOLEIL / LUNE ────────────────────────────────────────── */
+const sunSphere=BABYLON.MeshBuilder.CreateSphere("sunSph",{diameter:2.8},scene);
+const sunSphMat=new BABYLON.StandardMaterial("sunSphMat",scene);
+sunSphMat.emissiveColor=C3(1,.95,.6);sunSphMat.disableLighting=true;sunSphere.material=sunSphMat;
+
+const moonSphere=BABYLON.MeshBuilder.CreateSphere("moonSph",{diameter:2},scene);
+const moonSphMat=new BABYLON.StandardMaterial("moonSphMat",scene);
+moonSphMat.emissiveColor=C3(.92,.92,1);moonSphMat.disableLighting=true;
+moonSphere.material=moonSphMat;moonSphere.isVisible=false;
+
+/* ── PARTICULES ───────────────────────────────────────────── */
+const birds=new BABYLON.ParticleSystem("birds",24,scene);
+birds.emitter=new BABYLON.Vector3(0,12,0);
+birds.minEmitBox=new BABYLON.Vector3(-16,-4,-16);birds.maxEmitBox=new BABYLON.Vector3(16,5,16);
+birds.color1=C4(1,1,1,1);birds.color2=C4(.85,.85,.9,.7);birds.colorDead=C4(1,1,1,0);
+birds.minSize=.22;birds.maxSize=.48;birds.minLifeTime=5;birds.maxLifeTime=10;birds.emitRate=2.5;
+birds.minEmitPower=1.5;birds.maxEmitPower=3.8;
+birds.direction1=new BABYLON.Vector3(-1.8,.3,-1);birds.direction2=new BABYLON.Vector3(1.8,.6,1);
+birds.gravity=new BABYLON.Vector3(0,-.04,0);birds.updateSpeed=.008;birds.start();
+
+const stars=new BABYLON.ParticleSystem("stars",300,scene);
+stars.emitter=new BABYLON.Vector3(0,0,0);
+stars.minEmitBox=new BABYLON.Vector3(-160,65,-160);stars.maxEmitBox=new BABYLON.Vector3(160,160,160);
+stars.color1=C4(1,1,1,.95);stars.color2=C4(.9,.9,1,.75);stars.colorDead=C4(1,1,1,0);
+stars.minSize=.3;stars.maxSize=.85;stars.minLifeTime=9999;stars.maxLifeTime=9999;
+stars.emitRate=0;stars.gravity=new BABYLON.Vector3(0,0,0);
+stars.direction1=stars.direction2=new BABYLON.Vector3(0,0,0);
+stars.minEmitPower=stars.maxEmitPower=0;stars.updateSpeed=.01;stars.start();
+
+/* ── CYCLE JOUR/NUIT ──────────────────────────────────────── */
+let curH=12;
+const updateDN=()=>{
+  const now=new Date();
+  const h=now.getHours()+now.getMinutes()/60+now.getSeconds()/3600;
+  curH=h;
+  const ang=((h-6)/24)*Math.PI*2,sR=60,sX=Math.cos(ang)*sR,sY=Math.sin(ang)*sR;
+  sun.position.set(sX,sY,35);sun.direction=new BABYLON.Vector3(-sX,-sY,-35).normalize();
+  sunSphere.position.set(sX*.58,sY*.58,28);sunSphere.isVisible=sY>-8;
+  moonSphere.position.set(-sX*.55,-sY*.55,-26);moonSphere.isVisible=sY<10;
+
+  let pal;
+  const seg=(h1,h2,p1,p2)=>lP(p1,p2,Math.min(1,Math.max(0,(h-h1)/(h2-h1))));
+  if(h<4.5)pal=PAL.night;
+  else if(h<7)pal=seg(4.5,7,PAL.night,PAL.dawn);
+  else if(h<8.5)pal=seg(7,8.5,PAL.dawn,PAL.day);
+  else if(h<17.5)pal=PAL.day;
+  else if(h<19.5)pal=seg(17.5,19.5,PAL.day,PAL.dusk);
+  else if(h<21)pal=seg(19.5,21,PAL.dusk,PAL.night);
+  else pal=PAL.night;
+
+  scene.clearColor=C4(pal.sky.r,pal.sky.g,pal.sky.b,1);
+  scene.fogColor=pal.fog;
+  sun.diffuse=pal.sun;sun.intensity=pal.si;
+  ambLight.diffuse=pal.amb;ambLight.intensity=pal.ai;
+  sunSphMat.emissiveColor=pal.sun;
+
+  // Lune = lumière douce nocturne
+  const nf=pal.ai<.32?Math.max(0,(.32-pal.ai)/.32):0;
+  moonLight.intensity=nf*.5;
+  moonLight.position.set(-sX*.4,-sY*.4,-20);
+  stars.emitRate=nf>.35?300:0;
+
+  const H=String(now.getHours()).padStart(2,"0"),M=String(now.getMinutes()).padStart(2,"0");
+  document.getElementById("clock-time").textContent=`${H}:${M}`;
+  document.getElementById("clock-phase").textContent=h>=6&&h<8?"🌅":h>=8&&h<17?"☀️":h>=17&&h<20?"🌇":"🌙";
+};
+updateDN();setInterval(updateDN,4000);
+
+/* ════════════════════════════════════════════════════════════
+   SFX — WEB AUDIO PROCÉDURAL
+   Le bouton crée l'AudioContext directement sur click (geste utilisateur)
+════════════════════════════════════════════════════════════ */
+let actx=null,sfxOn=false,wGain=null,windGain=null;
+
+function startSFX(){
+  // Crée le contexte audio dans le gestionnaire de clic = toujours autorisé
+  actx=new(window.AudioContext||window.webkitAudioContext)();
+
+  // ── VAGUES (bruit brun + LFO) ────────────────────────────
+  const sr=actx.sampleRate,len=sr*5;
+  const buf=actx.createBuffer(1,len,sr),d=buf.getChannelData(0);
+  let last=0;
+  for(let i=0;i<len;i++){const w=Math.random()*2-1;d[i]=last=(last+.025*w)/1.025;}
+  const mx=d.reduce((a,v)=>Math.max(a,Math.abs(v)),0);
+  for(let i=0;i<len;i++) d[i]/=mx;
+
+  const waveSrc=actx.createBufferSource();
+  waveSrc.buffer=buf;waveSrc.loop=true;
+  const lpf=actx.createBiquadFilter();lpf.type="lowpass";lpf.frequency.value=400;lpf.Q.value=.9;
+  const lfo=actx.createOscillator(),lfoG=actx.createGain();
+  lfo.frequency.value=.11;lfoG.gain.value=.25;
+  lfo.connect(lfoG);
+  wGain=actx.createGain();wGain.gain.value=.30;
+  lfoG.connect(wGain.gain);
+  waveSrc.connect(lpf);lpf.connect(wGain);wGain.connect(actx.destination);
+  lfo.start();waveSrc.start();
+
+  // ── VENT (bruit blanc bandpass + LFO lent) ───────────────
+  const wbuf=actx.createBuffer(1,sr*7,sr),wd=wbuf.getChannelData(0);
+  for(let i=0;i<wd.length;i++) wd[i]=Math.random()*2-1;
+  const wsrc=actx.createBufferSource();
+  wsrc.buffer=wbuf;wsrc.loop=true;wsrc.playbackRate.value=.6;
+  const bpf=actx.createBiquadFilter();bpf.type="bandpass";bpf.frequency.value=820;bpf.Q.value=.5;
+  const wlfo=actx.createOscillator(),wlfoG=actx.createGain();
+  wlfo.frequency.value=.032;wlfoG.gain.value=.022;wlfo.connect(wlfoG);
+  windGain=actx.createGain();windGain.gain.value=.048;
+  wlfoG.connect(windGain.gain);
+  wsrc.connect(bpf);bpf.connect(windGain);windGain.connect(actx.destination);
+  wlfo.start();wsrc.start();
+
+  // ── MOUETTES ─────────────────────────────────────────────
+  const gull=()=>{
+    if(!sfxOn) return;
+    const now=actx.currentTime;
+    const o=actx.createOscillator(),g=actx.createGain(),f=actx.createBiquadFilter();
+    o.type="sawtooth";
+    o.frequency.setValueAtTime(570+Math.random()*200,now);
+    o.frequency.linearRampToValueAtTime(860+Math.random()*240,now+.2);
+    o.frequency.linearRampToValueAtTime(470+Math.random()*130,now+.48);
+    g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(.075,now+.07);
+    g.gain.linearRampToValueAtTime(.05,now+.38);g.gain.linearRampToValueAtTime(0,now+.6);
+    f.type="bandpass";f.frequency.value=760;f.Q.value=2.5;
+    o.connect(f);f.connect(g);g.connect(actx.destination);
+    o.start(now);o.stop(now+.65);
+    const next=(curH>=8&&curH<18)?5000+Math.random()*9000:14000+Math.random()*18000;
+    setTimeout(gull,next);
+  };
+  setTimeout(gull,3000+Math.random()*4000);
+
+  // ── GRILLONS (nuit) ───────────────────────────────────────
+  const cricket=()=>{
+    const isNight=curH<6||curH>=20;
+    if(sfxOn&&isNight){
+      const now=actx.currentTime;
+      for(let i=0;i<4;i++){
+        const o=actx.createOscillator(),g=actx.createGain();
+        o.type="square";o.frequency.value=4100+Math.random()*600;
+        g.gain.setValueAtTime(0,now+i*.052);
+        g.gain.linearRampToValueAtTime(.018,now+i*.052+.012);
+        g.gain.linearRampToValueAtTime(0,now+i*.052+.038);
+        o.connect(g);g.connect(actx.destination);
+        o.start(now+i*.052);o.stop(now+i*.052+.045);
+      }
+    }
+    setTimeout(cricket,isNight?700+Math.random()*1100:3000+Math.random()*4000);
+  };
+  setTimeout(cricket,1000);
+
+  sfxOn=true;
+}
+
+document.getElementById("sound-btn").addEventListener("click",()=>{
+  if(!actx){
+    startSFX();
+    document.getElementById("sound-btn").textContent="🔊";
+    return;
+  }
+  sfxOn=!sfxOn;
+  const now=actx.currentTime;
+  if(wGain)    wGain.gain.setTargetAtTime(sfxOn?.30:0,now,.6);
+  if(windGain) windGain.gain.setTargetAtTime(sfxOn?.048:0,now,.6);
+  document.getElementById("sound-btn").textContent=sfxOn?"🔊":"🔇";
+});
+
+/* ── RENDER LOOP ──────────────────────────────────────────── */
+let charRoot=null,charBaseY=.14;
+engine.runRenderLoop(()=>{
+  const t=performance.now()/1000;
+  if(charRoot&&charRoot._idleAnim){
+    charRoot.position.y=charBaseY+Math.sin(t*1.4)*.025;
+    charRoot.rotation.y=Math.sin(t*.22)*.18;
+  }
+  scene.render();
+});
+window.addEventListener("resize",()=>engine.resize());
+
+/* ── CHARGEMENT GLB ───────────────────────────────────────── */
+const importMesh=(folder,file,onP)=>new Promise((res,rej)=>{
+  BABYLON.SceneLoader.ImportMesh("",folder,file,scene,
+    (m,_p,_s,a)=>res({meshes:m,anims:a}),onP||null,(sc,msg)=>rej(new Error(msg)));
+});
+
+(async()=>{
+  try{
+    prog(50,"Ville…");
+    const city=await importMesh("./assets/","simple_city_free.glb",
+      e=>{if(e.total)prog(50+(e.loaded/e.total)*18,"Ville…");});
+    city.meshes[0].scaling.setAll(.145);
+    city.meshes[0].position.set(0,.14,0);
+    city.meshes.forEach(m=>{if(!m.name.includes("__root__")){m.receiveShadows=true;shadow.addShadowCaster(m,true);waterMat.addToRenderList(m);}});
+    prog(70,"Ville ✓");
+
+    prog(71,"Arbres…");
+    const treeRes=await importMesh("./assets/","three.glb");
+    const tpl=treeRes.meshes[0];
+    tpl.setEnabled(false);tpl.getChildMeshes().forEach(m=>m.setEnabled(false));
+    CFG.TREES.forEach(([x,z])=>{
+      const y=getH(x,z);if(y<CFG.SAND_Y+.03)return;
+      const cl=tpl.clone("t"+x+"_"+z);
+      cl.getChildMeshes().forEach(m=>{m.setEnabled(true);m.isPickable=false;m.receiveShadows=true;shadow.addShadowCaster(m,true);waterMat.addToRenderList(m);});
+      cl.setEnabled(true);cl.scaling.setAll(.14);
+      cl.rotation.y=(x*7.3+z*3.1)%(Math.PI*2);cl.position.set(x,y,z);
+    });
+    prog(86,"Arbres ✓");
+
+    prog(87,"Avatar…");
+    const avRes=await importMesh("./assets/","free_avatar_for_iclone.glb");
+    const avRoot=avRes.meshes[0];
+    avRoot.scaling.setAll(.022);charBaseY=.14;
+    avRoot.position.set(3.5,charBaseY,6);avRoot.rotation.y=-Math.PI*.6;
+    avRoot._idleAnim=true;charRoot=avRoot;
+    avRes.meshes.forEach(m=>{if(!m.name.includes("__root__")){m.receiveShadows=true;shadow.addShadowCaster(m,true);waterMat.addToRenderList(m);}});
+    prog(100,"Prêt ! 🏝️");
+
+  }catch(e){console.warn("GLB:",e);prog(100,"Chargement partiel");}
+
+  setTimeout(()=>{const el=document.getElementById("loading");if(!el)return;el.style.opacity="0";setTimeout(()=>el.remove(),900);},500);
+})();
+
+setTimeout(()=>{const el=document.getElementById("loading");if(el){el.style.opacity="0";setTimeout(()=>el.remove(),900);}},10000);
+</script>
+</body>
+</html>
